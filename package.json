@@ -1,17 +1,34 @@
 {
   "name": "frontpoint",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "description": "FrontPoint Security API client.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test",
+    "test:types": "tsc --noEmit --strict --module nodenext --target es2022 type-tests/consumer.mts type-tests/consumer.cts"
   },
   "author": "John Hurliman <jhurliman@jhurliman.org>",
   "license": "MIT",
-  "dependencies": {
-    "node-fetch": "^1.7.3"
-  },
   "devDependencies": {
-    "yargs": "^10.0.3"
+    "@types/node": "22.20.2",
+    "typescript": "7.0.2"
+  },
+  "types": "index.d.ts",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "LICENSE",
+    "CHANGELOG.md",
+    "RELEASING.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jhurliman/node-frontpoint.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jhurliman/node-frontpoint/issues"
   }
 }
