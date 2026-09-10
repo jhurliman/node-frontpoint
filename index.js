@@ -1,325 +1,143 @@
-/**
- * @module frontpoint
- */
+'use strict';
 
-const fetch = require('node-fetch')
+const LOGIN = 'https://my.frontpointsecurity.com/login';
+const FRONTPOINT = 'https://my.frontpointsecurity.com/api/';
+const ALARM = 'https://www.alarm.com';
+const UA = `node-frontpoint/${require('./package.json').version}`;
+const SYSTEM_STATES = Object.freeze({ UNKNOWN: 0, DISARMED: 1, ARMED_STAY: 2, ARMED_AWAY: 3, ARMED_NIGHT: 4 });
+const SENSOR_STATES = Object.freeze({ UNKNOWN: 0, CLOSED: 1, OPEN: 2, IDLE: 3, ACTIVE: 4, DRY: 5, WET: 6 });
 
-const LOGIN_URL = 'https://my.frontpointsecurity.com/login'
-const TOKEN_URL = 'https://my.frontpointsecurity.com/api/Login/token'
-const SSO_URL = 'https://my.frontpointsecurity.com/api/Account/AdcRedirectUrl'
-const IDENTITIES_URL = 'https://www.alarm.com/web/api/identities'
-const HOME_URL = 'https://www.alarm.com/web/system/home'
-const SYSTEM_URL = 'https://www.alarm.com/web/api/systems/systems/'
-const PARTITION_URL = 'https://www.alarm.com/web/api/devices/partitions/'
-const SENSORS_URL = 'https://www.alarm.com/web/api/devices/sensors'
-const CT_JSON = 'application/json;charset=UTF-8'
-const UA = `node-frontpoint/${require('./package').version}`
-
-const SYSTEM_STATES = {
-  UNKNOWN: 0,
-  DISARMED: 1,
-  ARMED_STAY: 2,
-  ARMED_AWAY: 3,
-  ARMED_NIGHT: 4
+class FrontpointError extends Error {
+  constructor(message, status) { super(message); this.name = 'FrontpointError'; this.status = status; }
 }
 
-const SENSOR_STATES = {
-  UNKNOWN: 0,
-  CLOSED: 1,
-  OPEN: 2,
-  IDLE: 3,
-  ACTIVE: 4,
-  DRY: 5,
-  WET: 6
-}
+function createClient({ fetch: transport = globalThis.fetch, timeout = 60000 } = {}) {
+  if (typeof transport !== 'function') throw new TypeError('fetch must be a function');
+  if (!Number.isInteger(timeout) || timeout <= 0 || timeout > 2147483647) throw new RangeError('timeout must be positive milliseconds no greater than 2147483647');
 
-exports.login = login
-exports.getCurrentState = getCurrentState
-exports.getPartition = getPartition
-exports.getSensors = getSensors
-exports.armStay = armStay
-exports.armAway = armAway
-exports.disarm = disarm
-exports.SYSTEM_STATES = SYSTEM_STATES
-exports.SENSOR_STATES = SENSOR_STATES
-
-// Exported methods ////////////////////////////////////////////////////////////
-
-/**
- * Authenticate with alarm.com using the my.frontpointsecurity.com single
- * sign-on portal. Returns an authentication object that can be passed to other
- * methods.
- * 
- * @param {string} username FrontPoint username.
- * @param {string} password FrontPoint password.
- * @returns {Promise}
- */
-function login(username, password) {
-  let loginCookies, ajaxKey
-
-  return post(TOKEN_URL, {
-    headers: { 'Content-Type': CT_JSON, Referer: LOGIN_URL, 'User-Agent': UA },
-    body: { Username: username, Password: password, RememberMe: false }
-  })
-    .then(res => {
-      const token = res.headers.get('x-fpsso')
-      if (!token)
-        throw new Error(`No X-FPSSO header: ${JSON.stringify(headers.raw())}`)
-
-      return post(SSO_URL, {
-        body: { Href: LOGIN_URL },
-        headers: {
-          'Content-Type': CT_JSON,
-          Cookie: `FPTOKEN=${token}`,
-          Authorization: `Bearer ${token}`,
-          Referer: LOGIN_URL,
-          'User-Agent': UA
-        }
-      })
-    })
-    .then(res => {
-      const redirectUrl = res.body
-      return fetch(redirectUrl, { method: 'GET', redirect: 'manual' })
-    })
-    .then(res => {
-      const cookies = res.headers.raw()['set-cookie']
-      loginCookies = cookies.map(c => c.split(';')[0]).join('; ')
-
-      const re = /afg=([^;]+);/.exec(loginCookies)
-      if (!re) throw new Error(`No afg cookie: ${loginCookies}`)
-
-      ajaxKey = re[1]
-    })
-    .then(() =>
-      get(IDENTITIES_URL, {
-        headers: {
-          Accept: 'application/vnd.api+json',
-          Cookie: loginCookies,
-          AjaxRequestUniqueKey: ajaxKey,
-          Referer: 'https://www.alarm.com/web/system/home',
-          'User-Agent': UA
-        }
-      })
-    )
-    .then(res => {
-      const identities = res.body
-      const systems = (identities.data || []).map(d =>
-        getValue(d, 'relationships.selectedSystem.data.id')
-      )
-
-      return {
-        cookie: loginCookies,
-        ajaxKey: ajaxKey,
-        systems: systems,
-        identities: identities
+  async function request(method, url, options = {}) {
+    const signal = AbortSignal.any([AbortSignal.timeout(timeout), ...(options.signal ? [options.signal] : [])]);
+    try {
+      const response = await transport(url, {
+        method, redirect: 'manual', signal,
+        headers: { 'User-Agent': UA, ...options.headers },
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      });
+      if (!response.ok && !(options.allowRedirect && response.status >= 300 && response.status < 400)) {
+        if (response.body) await response.body.cancel().catch(() => {});
+        throw new FrontpointError(`${method} ${new URL(url).origin} returned HTTP ${response.status}`, response.status);
       }
-    })
-}
-
-/**
- * Retrieve information about the current state of a security system including
- * attributes, partitions, sensors, and relationships.
- * 
- * @param {string} systemID ID of the FrontPoint system to query. The
- *   Authentication object returned from the `login` method contains a `systems`
- *   property which is an array of system IDs.
- * @param {Object} authOpts Authentication object returned from the `login`
- *   method.
- * @returns {Promise}
- */
-function getCurrentState(systemID, authOpts) {
-  return authenticatedGet(SYSTEM_URL + systemID, authOpts).then(res => {
-    const rels = res.data.relationships
-    const partTasks = rels.partitions.data.map(p =>
-      getPartition(p.id, authOpts)
-    )
-    const sensorIDs = rels.sensors.data.map(s => s.id)
-
-    return Promise.all([
-      Promise.all(partTasks),
-      getSensors(sensorIDs, authOpts)
-    ]).then(partitionsAndSensors => {
-      const [partitions, sensors] = partitionsAndSensors
-      return {
-        id: res.data.id,
-        attributes: res.data.attributes,
-        partitions: partitions.map(p => p.data),
-        sensors: sensors.data,
-        relationships: rels
+      const text = await response.text();
+      let body = text;
+      if (text && (response.headers.get('content-type') || '').includes('json')) {
+        try { body = JSON.parse(text); }
+        catch { throw new FrontpointError('Server returned invalid JSON', response.status); }
       }
-    })
-  })
-}
-
-/**
- * Get information for a single security system partition.
- * 
- * @param {string} partitionID Partition ID to retrieve
- * @param {Object} authOpts Authentication object returned from the `login`
- *   method.
- * @returns {Promise}
- */
-function getPartition(partitionID, authOpts) {
-  return authenticatedGet(PARTITION_URL + partitionID, authOpts)
-}
-
-/**
- * Get information for one or more sensors.
- * 
- * @param {string|string[]} sensorIDs Array of sensor ID strings.
- * @param {Object} authOpts Authentication object returned from the `login`
- *   method.
- * @returns {Promise}
- */
-function getSensors(sensorIDs, authOpts) {
-  if (!Array.isArray(sensorIDs)) sensorIDs = [sensorIDs]
-  const query = sensorIDs.map(id => `ids%5B%5D=${id}`).join('&')
-  const url = `${SENSORS_URL}?${query}`
-  return authenticatedGet(url, authOpts)
-}
-
-/**
- * Arm a security system panel in "stay" mode. NOTE: This call generally takes
- * 20-30 seconds to complete.
- * 
- * @param {string} partitionID Partition ID to arm.
- * @param {Object} authOpts Authentication object returned from the `login`
- *   method.
- * @param {Object} opts Optional arguments for arming the system.
- * @param {boolean} opts.noEntryDelay Disable the 30-second entry delay.
- * @param {boolean} opts.silentArming Disable audible beeps and double the exit
- *   delay.
- * @returns {Promise}
- */
-function armStay(partitionID, authOpts, opts) {
-  return arm(partitionID, 'armStay', authOpts, opts)
-}
-
-/**
- * Arm a security system panel in "away" mode. NOTE: This call generally takes
- * 20-30 seconds to complete.
- * 
- * @param {string} partitionID Partition ID to arm.
- * @param {Object} authOpts Authentication object returned from the `login`
- *   method.
- * @param {Object} opts Optional arguments for arming the system.
- * @param {boolean} opts.noEntryDelay Disable the 30-second entry delay.
- * @param {boolean} opts.silentArming Disable audible beeps and double the exit
- *   delay.
- * @returns {Promise}
- */
-function armAway(partitionID, authOpts, opts) {
-  return arm(partitionID, 'armAway', authOpts, opts)
-}
-
-/**
- * Disarm a security system panel. NOTE: This call generally takes 20-30 seconds
- * to complete.
- * 
- * @param {string} partitionID Partition ID to disarm.
- * @param {Object} authOpts Authentication object returned from the `login`
- *   method.
- * @returns {Promise}
- */
-function disarm(partitionID, authOpts) {
-  return arm(partitionID, 'disarm', authOpts)
-}
-
-// Helper methods //////////////////////////////////////////////////////////////
-
-function arm(partitionID, verb, authOpts, opts) {
-  const url = `${PARTITION_URL}${partitionID}/${verb}`
-  const postOpts = Object.assign({}, authOpts, {
-    body: {
-      noEntryDelay: verb === 'disarm' ? undefined : Boolean(opts.noEntryDelay),
-      silentArming: verb === 'disarm' ? undefined : Boolean(opts.silentArming),
-      statePollOnly: false
+      return { body, headers: response.headers };
+    } catch (error) {
+      if (error instanceof FrontpointError) throw error;
+      // Do not include server bodies, cookies, authorization headers, SSO URLs,
+      // or transport exception text in errors intended for application logs.
+      throw new FrontpointError(signal.aborted ? 'Request aborted or timed out' : 'Network request failed');
     }
-  })
-  return authenticatedPost(url, postOpts)
+  }
+
+  function headers(auth = {}) {
+    if (typeof auth.cookie !== 'string' || typeof auth.ajaxKey !== 'string') throw new TypeError('A login authentication object is required');
+    return { ...auth.headers, Accept: 'application/vnd.api+json',
+      AjaxRequestUniqueKey: auth.ajaxKey, Cookie: auth.cookie,
+      Referer: `${ALARM}/web/system/home`, 'Content-Type': 'application/json; charset=UTF-8' };
+  }
+  async function authenticated(method, path, auth, body) {
+    return (await request(method, ALARM + path, { headers: headers(auth), body, signal: auth.signal })).body;
+  }
+  function id(value) {
+    if (typeof value !== 'string' || !value) throw new TypeError('Resource IDs must be non-empty strings');
+    return encodeURIComponent(value);
+  }
+
+  async function login(username, password, options = {}) {
+    if (typeof username !== 'string' || !username || typeof password !== 'string' || !password) {
+      throw new TypeError('Username and password must be non-empty strings');
+    }
+    const tokenResponse = await request('POST', FRONTPOINT + 'Login/token', {
+      signal: options.signal,
+      headers: { 'Content-Type': 'application/json;charset=UTF-8', Referer: LOGIN },
+      body: { Username: username, Password: password, RememberMe: false },
+    });
+    const token = tokenResponse.headers.get('x-fpsso');
+    if (!token) throw new FrontpointError('Login response did not contain X-FPSSO');
+    const sso = await request('POST', FRONTPOINT + 'Account/AdcRedirectUrl', {
+      signal: options.signal,
+      headers: { 'Content-Type': 'application/json;charset=UTF-8', Cookie: `FPTOKEN=${token}`, Authorization: `Bearer ${token}`, Referer: LOGIN },
+      body: { Href: LOGIN },
+    });
+    let redirect;
+    try { redirect = new URL(sso.body); } catch { throw new FrontpointError('Login response did not contain a valid SSO URL'); }
+    if (redirect.protocol !== 'https:' || !(redirect.hostname === 'alarm.com' || redirect.hostname.endsWith('.alarm.com')) || redirect.username || redirect.password) {
+      throw new FrontpointError('Login SSO URL must use HTTPS on alarm.com');
+    }
+    const session = await request('GET', redirect.href, { allowRedirect: true, signal: options.signal });
+    const cookies = new Map(session.headers.getSetCookie().map(cookie => {
+      const pair = cookie.split(';', 1)[0]; const separator = pair.indexOf('=');
+      return [pair.slice(0, separator).trim(), pair.slice(separator + 1)];
+    }));
+    const ajaxKey = cookies.get('afg');
+    if (!ajaxKey) throw new FrontpointError('Alarm.com response did not contain an afg cookie');
+    const auth = { cookie: [...cookies].map(([key, value]) => `${key}=${value}`).join('; '), ajaxKey };
+    const identities = await authenticated('GET', '/web/api/identities', { ...auth, signal: options.signal });
+    if (!Array.isArray(identities?.data)) throw new FrontpointError('Identity response did not contain a data array');
+    const systems = [...new Set(identities.data.map(item => item?.relationships?.selectedSystem?.data?.id)
+      .filter(value => typeof value === 'string' && value.length))];
+    return { ...auth, systems, identities };
+  }
+
+  async function getPartition(partitionID, auth) {
+    return authenticated('GET', '/web/api/devices/partitions/' + id(partitionID), auth);
+  }
+  async function getSensors(sensorIDs, auth) {
+    const values = Array.isArray(sensorIDs) ? sensorIDs : [sensorIDs];
+    const query = new URLSearchParams();
+    for (const sensorID of values) { id(sensorID); query.append('ids[]', sensorID); }
+    if (!values.length) return { data: [] };
+    return authenticated('GET', '/web/api/devices/sensors?' + query, auth);
+  }
+  async function getCurrentState(systemID, auth) {
+    const response = await authenticated('GET', '/web/api/systems/systems/' + id(systemID), auth);
+    if (!response?.data || !response.data.relationships) throw new FrontpointError('System response is missing relationships');
+    const relationships = response.data.relationships;
+    const partitionRefs = relationships.partitions?.data ?? [];
+    const sensorRefs = relationships.sensors?.data ?? [];
+    if (!Array.isArray(partitionRefs) || !Array.isArray(sensorRefs)) throw new FrontpointError('System relationships must be arrays');
+    const [partitions, sensors] = await Promise.all([
+      Promise.all(partitionRefs.map(partition => getPartition(partition.id, auth))),
+      getSensors(sensorRefs.map(sensor => sensor.id), auth),
+    ]);
+    return { id: response.data.id, attributes: response.data.attributes,
+      partitions: partitions.map(partition => partition.data), sensors: sensors.data, relationships };
+  }
+  async function arm(partitionID, verb, auth, options = {}) {
+    const body = verb === 'disarm' ? { statePollOnly: false } : {
+      noEntryDelay: Boolean(options?.noEntryDelay), silentArming: Boolean(options?.silentArming), statePollOnly: false,
+    };
+    return authenticated('POST', `/web/api/devices/partitions/${id(partitionID)}/${verb}`, auth, body);
+  }
+  return { login, getCurrentState, getPartition, getSensors,
+    armStay: (partitionID, auth, options) => arm(partitionID, 'armStay', auth, options),
+    armAway: (partitionID, auth, options) => arm(partitionID, 'armAway', auth, options),
+    disarm: (partitionID, auth) => arm(partitionID, 'disarm', auth),
+    SYSTEM_STATES, SENSOR_STATES };
 }
 
-function getValue(data, path) {
-  if (typeof path === 'string') path = path.split('.')
-  for (let i = 0; typeof data === 'object' && i < path.length; i++)
-    data = data[path[i]]
-  return data
-}
-
-function authenticatedGet(url, opts) {
-  opts = opts || {}
-  opts.headers = opts.headers || {}
-  opts.headers.Accept = 'application/vnd.api+json'
-  opts.headers.AjaxRequestUniqueKey = opts.ajaxKey
-  opts.headers.Cookie = opts.cookie
-  opts.headers.Referer = HOME_URL
-  opts.headers['User-Agent'] = UA
-
-  return get(url, opts).then(res => res.body)
-}
-
-function authenticatedPost(url, opts) {
-  opts = opts || {}
-  opts.headers = opts.headers || {}
-  opts.headers.Accept = 'application/vnd.api+json'
-  opts.headers.AjaxRequestUniqueKey = opts.ajaxKey
-  opts.headers.Cookie = opts.cookie
-  opts.headers.Referer = HOME_URL
-  opts.headers['User-Agent'] = UA
-  opts.headers['Content-Type'] = 'application/json; charset=UTF-8'
-
-  return post(url, opts).then(res => res.body)
-}
-
-function get(url, opts) {
-  opts = opts || {}
-
-  let status
-  let resHeaders
-
-  return fetch(url, {
-    method: 'GET',
-    redirect: 'manual',
-    headers: opts.headers
-  })
-    .then(res => {
-      status = res.status
-      resHeaders = res.headers
-
-      const type = res.headers.get('content-type') || ''
-      return type.indexOf('json') !== -1 ? res.json() : res.text()
-    })
-    .then(body => {
-      if (status >= 400) throw new Error(body.Message || body || status)
-      return { headers: resHeaders, body: body }
-    })
-    .catch(err => {
-      throw new Error(`GET ${url} failed: ${err.message || err}`)
-    })
-}
-
-function post(url, opts) {
-  opts = opts || {}
-
-  let status
-  let resHeaders
-
-  return fetch(url, {
-    method: 'POST',
-    redirect: 'manual',
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-    headers: opts.headers
-  })
-    .then(res => {
-      status = res.status
-      resHeaders = res.headers
-      return res.json()
-    })
-    .then(json => {
-      if (status !== 200) throw new Error(json.Message || status)
-      return { headers: resHeaders, body: json }
-    })
-    .catch(err => {
-      throw new Error(`POST ${url} failed: ${err.message || err}`)
-    })
-}
+exports.createClient = createClient;
+exports.FrontpointError = FrontpointError;
+const defaultClient = createClient();
+exports.login = defaultClient.login;
+exports.getCurrentState = defaultClient.getCurrentState;
+exports.getPartition = defaultClient.getPartition;
+exports.getSensors = defaultClient.getSensors;
+exports.armStay = defaultClient.armStay;
+exports.armAway = defaultClient.armAway;
+exports.disarm = defaultClient.disarm;
+exports.SYSTEM_STATES = defaultClient.SYSTEM_STATES;
+exports.SENSOR_STATES = defaultClient.SENSOR_STATES;
