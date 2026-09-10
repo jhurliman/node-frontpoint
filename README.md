@@ -10,8 +10,8 @@ small Promise API and exposes partition arming/disarming commands.
 **Service compatibility is not yet revalidated.** [Issue #3](https://github.com/jhurliman/node-frontpoint/issues/3)
 reports HTTP 403 during login. The modernization tests verify client behavior
 with simulated responses; they do not establish that today's service accepts
-this older login flow. Account-level verification is required before publishing
-2.0 as a working service integration. MFA and newer authentication flows are not
+this older login flow. Verify login and read-only state retrieval for your account
+before relying on this integration. MFA and newer authentication flows are not
 implemented.
 
 ## Install
