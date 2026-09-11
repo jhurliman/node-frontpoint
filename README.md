@@ -14,15 +14,20 @@ this older login flow. Verify login and read-only state retrieval for your accou
 before relying on this integration. MFA and newer authentication flows are not
 implemented.
 
+## Maintainer wanted
+
+The current maintainer no longer has an active Frontpoint account and cannot test this integration against a live setup. Automated tests pass, but this release has not been validated against the current Frontpoint service. Compatibility reports and fixes from active users are welcome.
+
+If you use this integration and would like to take over maintenance and releases, [open an issue](https://github.com/jhurliman/node-frontpoint/issues/new?title=Interested%20in%20maintaining%20this%20project) describing your setup and interest.
+
 ## Install
 
 ```sh
 npm install frontpoint
 ```
 
-The upcoming 2.0 release requires Node.js 22+ and uses built-in `fetch`, with no
-runtime dependencies. This README describes that release candidate; see the
-[release notes](CHANGELOG.md) for changes from 1.2.
+Version 2 requires Node.js 22+ and uses built-in `fetch`, with no runtime
+dependencies. See the [release notes](CHANGELOG.md) for changes from 1.2.
 
 ## Query a system
 

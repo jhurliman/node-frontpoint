@@ -1,7 +1,8 @@
 # Changelog
 
-## 2.0.0 — Unreleased; live service validation required
+## 2.0.0 — 2026-09-10
 
+- Document the lack of live account/hardware testing and invite an active user to take over maintenance.
 - Require Node.js 22+ and replace node-fetch 1 with native Fetch; no runtime dependencies remain.
 - Add createClient(), per-request timeouts, AbortSignal support, and sanitized structured errors.
 - Fix the missing-token ReferenceError, final-position afg cookie parsing, nullable identity relationships, optional arming arguments, URL encoding, and auth-object mutation.
